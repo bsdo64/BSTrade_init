@@ -2,6 +2,8 @@ import json
 import os
 import shutil
 import requests as r
+import asyncio
+import aiohttp
 
 
 def refresh_dir(path):
@@ -12,11 +14,15 @@ def refresh_dir(path):
         os.mkdir(path)
 
 
-database = open('coin.json').read()
-db_json = json.loads(database)
-idx = 'https://s2.coinmarketcap.com/generated/search/quick_search.json'
+print('request coin info db')
+try:
+    database = open('coin.json').read()
+    db_json = json.loads(database)
+except FileNotFoundError:
+    db_json = []
 
-print('request coin info')
+print('request coin info api')
+idx = 'https://s2.coinmarketcap.com/generated/search/quick_search.json'
 res = r.get(idx).json()
 coin_info = [{
     'name': coin['name'],
@@ -24,38 +30,41 @@ coin_info = [{
     'img_id': coin['id'],
     'symbol': coin['symbol'],
 } for coin in res]
-coin_symbols = {coin['symbol'] for coin in coin_info}
-database_symbols = {coin['symbol'] for coin in db_json}
 
-coin_symbols -= database_symbols
+print('compare coin info')
+coin_ids = {coin['img_id'] for coin in coin_info}
+database_ids = {coin['img_id'] for coin in db_json}
+coin_ids -= database_ids
+need_request = [coin for coin in coin_info if coin['img_id'] in coin_ids]
+
+print('need request : ', len(need_request))
+if need_request:
+    refresh_dir('img')
+
+    print('request image')
+    async def fetch(client, item):
+        url = 'https://s2.coinmarketcap.com/static/img/coins/128x128/' \
+               '{}.png'.format(item['img_id'])
+
+        async with client.get(url) as resp:
+            assert resp.status == 200
+            img_b = await resp.read()
+            with open('img/{}.png'.format(item['slug']), 'wb') as f:
+                f.write(img_b)
+
+
+    async def main():
+        async with aiohttp.ClientSession() as client:
+            await asyncio.gather(*[
+                asyncio.ensure_future(fetch(client, item))
+                for item in coin_info
+            ])
+
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+    print('total coins :', len(database_ids))
 
 print('save coin info')
 with open("coin.json", 'wb') as f:
     f.write(bytes(json.dumps(coin_info), encoding='utf-8'))
-
-need_request = [coin for coin in coin_info if coin['symbol'] in coin_symbols]
-print('need request : ', len(need_request))
-
-if need_request:
-    refresh_dir('img')
-
-    def img_url_maker(coin_id):
-        return 'https://s2.coinmarketcap.com/static/img/coins/128x128/' \
-               '{}.png'.format(coin_id)
-
-
-    img_urls = [img_url_maker(coin['img_id']) for coin in need_request]
-    img_binary = []
-    print('request image')
-    for k, url in enumerate(img_urls):
-        res = r.get(url, headers={'Cache-Control': 'public'})
-        img_binary.append(res.content)
-
-    print('saving files')
-    for k, img in enumerate(img_binary):
-        file_name = coin_info[k]['slug']
-        with open("img/{}.png".format(file_name), 'wb') as f:
-            f.write(img)
-
-
-print('total coins :', len(coin_info))
